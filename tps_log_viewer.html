@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log TPS viewer</title>
+<style>
+  /* ---- palette (single categorical slot, validated both modes) ---- */
+  .viz-root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page:           #f9f9f7;
+    --ink-primary:    #0b0b0b;
+    --ink-secondary:  #52514e;
+    --ink-muted:      #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --series-1:       #2a78d6;
+    --ring:           rgba(11,11,11,0.10);
+    --accent:         #1baf7a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page:           #0d0d0d;
+      --ink-primary:    #ffffff;
+      --ink-secondary:  #c3c2b7;
+      --ink-muted:      #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --series-1:       #3987e5;
+      --ring:           rgba(255,255,255,0.10);
+      --accent:         #199e70;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page:           #0d0d0d;
+    --ink-primary:    #ffffff;
+    --ink-secondary:  #c3c2b7;
+    --ink-muted:      #898781;
+    --gridline:       #2c2c2a;
+    --baseline:       #383835;
+    --series-1:       #3987e5;
+    --ring:           rgba(255,255,255,0.10);
+    --accent:         #199e70;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--page); }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--ink-primary);
+    padding: 24px;
+  }
+
+  .viz-root {
+    background: var(--surface-1);
+    border: 1px solid var(--ring);
+    border-radius: 10px;
+    padding: 20px 24px 16px;
+    max-width: 980px;
+  }
+
+  /* drop zone */
+  .drop {
+    border: 1.5px dashed var(--baseline);
+    border-radius: 8px;
+    padding: 28px 20px;
+    text-align: center;
+    color: var(--ink-secondary);
+    cursor: pointer;
+    transition: border-color .12s, background .12s;
+  }
+  .drop:hover, .drop.drag { border-color: var(--series-1); background: rgba(42,120,214,0.04); }
+  .drop .big { font-size: 14px; font-weight: 500; color: var(--ink-primary); }
+  .drop .hint { font-size: 12px; margin-top: 4px; }
+  .drop .fname { font-size: 12px; color: var(--accent); margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+  /* controls */
+  .controls { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-top: 14px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .field input, .field select {
+    font: inherit; font-size: 13px; color: var(--ink-primary);
+    background: var(--page); border: 1px solid var(--ring); border-radius: 6px;
+    padding: 6px 8px; min-width: 220px;
+  }
+  .field input:focus, .field select:focus { outline: none; border-color: var(--series-1); }
+
+  .status { margin-top: 12px; font-size: 12px; color: var(--ink-secondary); min-height: 16px; }
+  .status code { background: var(--page); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+
+  /* head + kpis */
+  .head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-top: 14px; }
+  .title { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+  .subtitle { color: var(--ink-secondary); font-size: 12px; margin-top: 2px; }
+  .kpis { display: flex; gap: 22px; flex-wrap: wrap; }
+  .kpi { text-align: right; }
+  .kpi .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kpi .k { font-size: 11px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+
+  /* chart */
+  .chart { position: relative; margin-top: 18px; }
+  svg { display: block; width: 100%; height: 300px; }
+  .bar { fill: var(--series-1); transition: filter .12s ease; cursor: pointer; }
+  .bar:hover { filter: brightness(1.08); }
+  .axis text { fill: var(--ink-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .grid line { stroke: var(--gridline); stroke-width: 1; }
+  .baseline { stroke: var(--baseline); stroke-width: 1; }
+  .ylabel { fill: var(--ink-secondary); font-size: 11px; }
+  .empty { text-anchor: middle; fill: var(--ink-muted); font-size: 13px; }
+
+  .tooltip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+    background: var(--surface-1); border: 1px solid var(--ring); border-radius: 6px;
+    padding: 6px 10px; font-size: 12px; color: var(--ink-primary);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08); white-space: nowrap;
+  }
+  .tooltip .tt-t { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+  .tooltip .tt-v { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .foot { margin-top: 10px; font-size: 11px; color: var(--ink-muted); }
+  .foot strong { color: var(--ink-secondary); font-weight: 500; }
+  .foot code { background: var(--page); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="viz-root" id="root">
+  <div class="title">Log TPS viewer</div>
+  <div class="subtitle">Drop a log file → bucket <code style="font-size:11px">timestamp</code> per second → plot messages/sec</div>
+
+  <div class="drop" id="drop" tabindex="0" role="button" aria-label="Drop a log file or click to browse">
+    <div class="big" id="dropBig">Drop log file here or click to browse</div>
+    <div class="hint">JSON-per-line logs · field <code>timestamp</code> · filter by message substring</div>
+    <div class="fname" id="fname"></div>
+    <input type="file" id="file" accept=".log,.txt,.json,.jsonl" hidden>
+  </div>
+
+  <div class="controls">
+    <div class="field">
+      <label for="filter">Message filter</label>
+      <input id="filter" type="text" value="[Producer] Success to publish message">
+    </div>
+    <div class="field">
+      <label for="bucket">Bucket size</label>
+      <select id="bucket">
+        <option value="1">1 second</option>
+        <option value="5">5 seconds</option>
+        <option value="10">10 seconds</option>
+        <option value="60">1 minute</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="status" id="status">No file loaded.</div>
+
+  <div class="head">
+    <div>
+      <div class="title" id="chartTitle">Producer publish throughput (TPS)</div>
+      <div class="subtitle" id="sub"></div>
+    </div>
+    <div class="kpis" id="kpis"></div>
+  </div>
+  <div class="chart">
+    <svg id="svg" role="img" aria-label="TPS chart"></svg>
+    <div class="tooltip" id="tt"></div>
+  </div>
+  <div class="foot" id="foot"></div>
+</div>
+
+<script>
+const TS_RE = /"timestamp"\s*:\s*"([^"]+)"/;
+const dropEl   = document.getElementById("drop");
+const fileEl   = document.getElementById("file");
+const fnameEl  = document.getElementById("fname");
+const dropBig  = document.getElementById("dropBig");
+const filterEl = document.getElementById("filter");
+const bucketEl = document.getElementById("bucket");
+const statusEl = document.getElementById("status");
+
+let currentText = null;
+let currentName = null;
+
+/* ---------- file loading ---------- */
+dropEl.addEventListener("click", () => fileEl.click());
+dropEl.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileEl.click(); } });
+["dragenter","dragover"].forEach(ev => dropEl.addEventListener(ev, e => { e.preventDefault(); dropEl.classList.add("drag"); }));
+["dragleave","drop"].forEach(ev => dropEl.addEventListener(ev, e => { e.preventDefault(); dropEl.classList.remove("drag"); }));
+dropEl.addEventListener("drop", e => {
+  const f = e.dataTransfer.files[0];
+  if (f) readFile(f);
+});
+fileEl.addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (f) readFile(f);
+});
+
+async function readFile(f) {
+  currentName = f.name;
+  currentText = await f.text();
+  fnameEl.textContent = `${f.name} · ${(f.size / 1024).toFixed(1)} KB`;
+  dropBig.textContent = "Loaded — drop another to replace";
+  reparse();
+}
+
+filterEl.addEventListener("input", reparse);
+bucketEl.addEventListener("change", reparse);
+
+/* ---------- parse ---------- */
+function parseTsToSec(ts) {
+  // ts e.g. 2026-08-24T23:28:51.91604+07:00 — take string components, treat as UTC for arithmetic
+  const y = +ts.slice(0,4), mo = +ts.slice(5,7), d = +ts.slice(8,10);
+  const h = +ts.slice(11,13), mi = +ts.slice(14,16), s = +ts.slice(17,19);
+  return Date.UTC(y, mo-1, d, h, mi, s) / 1000; // monotonic; preserves original clock time
+}
+function secToLabel(sec) {
+  const dt = new Date(sec * 1000);
+  const pad = n => String(n).padStart(2, "0");
+  return `${pad(dt.getUTCHours())}:${pad(dt.getUTCMinutes())}:${pad(dt.getUTCSeconds())}`;
+}
+
+function parse(text, filter, bucketSec) {
+  const counts = new Map();   // bucketStartSec -> count
+  let total = 0, scanned = 0, matched = 0, noTs = 0;
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    scanned++;
+    if (filter && !line.includes(filter)) continue;
+    const m = TS_RE.exec(line);
+    if (!m) { noTs++; continue; }
+    const sec = parseTsToSec(m[1]);
+    const bucket = sec - (sec % bucketSec);
+    counts.set(bucket, (counts.get(bucket) || 0) + 1);
+    matched++;
+  }
+  if (matched === 0) return { points: [], total: 0, scanned, matched, noTs };
+
+  const keys = [...counts.keys()].sort((a,b) => a-b);
+  const start = keys[0], end = keys[keys.length-1];
+  const points = [];
+  for (let t = start; t <= end; t += bucketSec) {
+    points.push({ t: secToLabel(t), tps: counts.get(t) || 0 });
+  }
+  return {
+    points,
+    total: matched,
+    scanned,
+    matched,
+    noTs,
+    start: secToLabel(start),
+    end: secToLabel(end),
+  };
+}
+
+function reparse() {
+  if (currentText == null) return;
+  const filter = filterEl.value.trim();
+  const bucketSec = +bucketEl.value;
+  const d = parse(currentText, filter, bucketSec);
+  statusEl.innerHTML = d.matched
+    ? `<code>${currentName}</code> · scanned ${d.scanned.toLocaleString()} lines · matched <strong>${d.matched.toLocaleString()}</strong> · ${d.noTs ? `skipped ${d.noTs} (no timestamp)` : "no skips"}`
+    : `<code>${currentName}</code> · scanned ${d.scanned.toLocaleString()} lines · <strong>0 matches</strong> for filter "<code>${filter}</code>"`;
+  render(d, filter, bucketSec);
+}
+
+/* ---------- render ---------- */
+function render(d, filter, bucketSec) {
+  const W = 980, H = 300, m = {l: 44, r: 16, t: 12, b: 34};
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const svg = document.getElementById("svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+  if (!d.points.length) {
+    document.getElementById("sub").textContent = "";
+    document.getElementById("kpis").innerHTML = "";
+    document.getElementById("foot").innerHTML = "";
+    svg.innerHTML = `<text class="empty" x="${W/2}" y="${H/2}">No data to plot</text>`;
+    return;
+  }
+
+  const pts = d.points;
+  const maxV = Math.max(...pts.map(p => p.tps));
+  const yMax = Math.max(10, Math.ceil(maxV / 10) * 10);
+  const bw = iw / pts.length;
+  const barW = Math.max(2, bw - 3);
+  const sx = i => m.l + i * bw + (bw - barW) / 2;
+  const sy = v => m.t + ih - (v / yMax) * ih;
+
+  document.getElementById("sub").textContent =
+    `${filter ? `filter: "${filter}" · ` : ""}bucket ${bucketSec}s · ${d.start} → ${d.end}`;
+
+  document.getElementById("kpis").innerHTML = [
+    ["Total", d.total.toLocaleString()],
+    ["Peak", d.max ?? Math.max(...pts.map(p=>p.tps))],
+    ["Avg", (d.total / pts.length).toFixed(1)],
+    ["Buckets", pts.length],
+  ].map(([k, v]) => `<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+
+  let g = "";
+  const ticks = 5;
+  for (let i = 0; i <= ticks; i++) {
+    const v = Math.round((yMax / ticks) * i);
+    const y = sy(v);
+    g += `<line x1="${m.l}" y1="${y}" x2="${W - m.r}" y2="${y}"/>`;
+    g += `<text x="${m.l - 8}" y="${y + 3.5}" text-anchor="end">${v}</text>`;
+  }
+  // x labels: first, ~25%, mid, ~75%, last — capped to avoid collision
+  const idxs = Array.from(new Set([0, Math.floor(pts.length*0.25), Math.floor(pts.length/2), Math.floor(pts.length*0.75), pts.length-1]));
+  let xg = "";
+  idxs.forEach(i => {
+    const x = sx(i) + barW / 2;
+    xg += `<text x="${x}" y="${H - m.b + 18}" text-anchor="middle">${pts[i].t}</text>`;
+  });
+
+  let bars = "";
+  pts.forEach((p, i) => {
+    const x = sx(i), y = sy(p.tps), h = (p.tps / yMax) * ih;
+    bars += `<rect class="bar" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${h.toFixed(2)}" rx="2" data-i="${i}"/>`;
+  });
+
+  svg.innerHTML =
+    `<g class="grid">${g}</g>` +
+    `<g class="axis">${xg}</g>` +
+    `<line class="baseline" x1="${m.l}" y1="${sy(0)}" x2="${W - m.r}" y2="${sy(0)}"/>` +
+    `<text class="ylabel" x="${m.l - 30}" y="${m.t + ih / 2}" transform="rotate(-90 ${m.l - 30} ${m.t + ih / 2})" text-anchor="middle">messages / ${bucketSec}s</text>` +
+    `<g>${bars}</g>`;
+
+  const tt = document.getElementById("tt");
+  const root = document.getElementById("root");
+  svg.querySelectorAll(".bar").forEach(r => {
+    r.addEventListener("mouseenter", () => {
+      const i = +r.dataset.i, p = pts[i];
+      tt.innerHTML = `<div class="tt-t">${p.t}</div><div class="tt-v">${p.tps} msg / ${bucketSec}s</div>`;
+      tt.style.opacity = 1;
+      const br = r.getBoundingClientRect(), rr = root.getBoundingClientRect();
+      tt.style.left = (br.left - rr.left + br.width / 2) + "px";
+      tt.style.top  = (br.top  - rr.top  - 6) + "px";
+      tt.style.transform = "translate(-50%, -100%)";
+    });
+    r.addEventListener("mouseleave", () => { tt.style.opacity = 0; });
+  });
+
+  document.getElementById("foot").innerHTML =
+    `<strong>Source:</strong> <code>${currentName}</code> · field <code>timestamp</code> · filter <code>${filter}</code>`;
+}
+
+/* empty state on load */
+render({ points: [] }, "", 1);
+</script>
+</body>
+</html>
